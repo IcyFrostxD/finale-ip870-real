@@ -1,0 +1,207 @@
+const express = require('express');
+const mysql = require('mysql2/promise');
+const cors = require('cors');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const PORT = 3095;
+
+const pool = mysql.createPool({
+  host: 'localhost',
+  user: 'std6730251263',
+  password: 'D5w3Qh!Y',
+  database: 'ip_std6730251263',
+  port: 3306,
+});
+
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS Sonbor_Employees (
+      sonbor_ID_Employ INT AUTO_INCREMENT PRIMARY KEY,
+      sonbor_name VARCHAR(255) NOT NULL,
+      sonbor_position VARCHAR(255) NOT NULL,
+      sonbor_status VARCHAR(50) NOT NULL DEFAULT 'Active',
+      sonbor_salary DOUBLE NOT NULL
+    )
+  `);
+  const [rows] = await pool.query('SELECT COUNT(*) AS cnt FROM Sonbor_Employees');
+  if (rows[0].cnt === 0) {
+    await pool.query(
+      'INSERT INTO Sonbor_Employees (sonbor_name, sonbor_position, sonbor_status, sonbor_salary) VALUES ?',
+      [[
+        ['John Doe', 'Software Engineer', 'Active', 45000],
+        ['Jane Smith', 'Junior Developer', 'Active', 22000],
+        ['Somchai Kemglad', 'IT Support', 'On Leave', 18500],
+        ['Alice Johnson', 'System Architect', 'Active', 85000],
+        ['Bob Williams', 'DevOps Engineer', 'Active', 52000]
+      ]]
+    );
+  }
+}
+initDB();
+
+const formatEmp = (r) => ({
+  id: String(r.sonbor_ID_Employ),
+  name: r.sonbor_name,
+  position: r.sonbor_position,
+  status: r.sonbor_status,
+  salary: Number(r.sonbor_salary),
+  sonbor_ID_Employ: r.sonbor_ID_Employ
+});
+
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+  if (username === 'admin' && password === 'password123') {
+    return res.json({ success: true, token: 'mock-jwt-token' });
+  }
+  res.status(401).json({ success: false, message: 'Invalid credentials' });
+});
+
+app.get('/api/employees', async (req, res) => {
+  const [rows] = await pool.query('SELECT * FROM Sonbor_Employees ORDER BY sonbor_ID_Employ ASC');
+  res.json(rows.map(formatEmp));
+});
+
+app.post('/api/employees', async (req, res) => {
+  const { name, position, salary } = req.body;
+  if (!name || !position || salary === undefined || Number(salary) <= 0) {
+    return res.status(400).json({ error: 'All fields are required and salary must be positive.' });
+  }
+  const [result] = await pool.query(
+    'INSERT INTO Sonbor_Employees (sonbor_name, sonbor_position, sonbor_status, sonbor_salary) VALUES (?, ?, "Active", ?)',
+    [name.trim(), position.trim(), Number(salary)]
+  );
+  const [newRow] = await pool.query('SELECT * FROM Sonbor_Employees WHERE sonbor_ID_Employ = ?', [result.insertId]);
+  res.status(201).json(formatEmp(newRow[0]));
+});
+
+// PUT แก้ไขข้อมูลพนักงานตาม ID
+app.put('/api/employees/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, position, salary } = req.body;
+
+  try {
+    const [rows] = await pool.query('SELECT * FROM Sonbor_Employees WHERE sonbor_ID_Employ = ?', [id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Employee not found' });
+
+    await pool.query(
+      'UPDATE Sonbor_Employees SET sonbor_name = ?, sonbor_position = ?, sonbor_salary = ? WHERE sonbor_ID_Employ = ?',
+      [name.trim(), position.trim(), Number(salary), id]
+    );
+
+    const [updated] = await pool.query('SELECT * FROM Sonbor_Employees WHERE sonbor_ID_Employ = ?', [id]);
+    res.json(formatEmp(updated[0]));
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update employee' });
+  }
+});
+
+app.delete('/api/employees/:id', async (req, res) => {
+  const [result] = await pool.query('DELETE FROM Sonbor_Employees WHERE sonbor_ID_Employ = ?', [req.params.id]);
+  if (result.affectedRows === 0) return res.status(404).json({ error: 'Not found' });
+  res.json({ success: true });
+});
+
+app.get('/api/employees/salary-clusters', async (req, res) => {
+  const [rows] = await pool.query('SELECT sonbor_salary FROM Sonbor_Employees');
+  const salaries = rows.map(r => Number(r.sonbor_salary)).filter(v => v > 0).sort((a, b) => a - b);
+
+  if (salaries.length === 0) return res.json({ success: true, clusters: [] });
+
+  let centroids = [salaries[0], salaries[Math.floor(salaries.length / 2)], salaries[salaries.length - 1]];
+  let clusters = [[], [], []];
+
+  for (let i = 0; i < 50; i++) {
+    clusters = [[], [], []];
+    salaries.forEach(val => {
+      let idx = 0, minDist = Math.abs(val - centroids[0]);
+      for (let c = 1; c < 3; c++) {
+        let dist = Math.abs(val - centroids[c]);
+        if (dist < minDist) { minDist = dist; idx = c; }
+      }
+      clusters[idx].push(val);
+    });
+    clusters.forEach((cluster, c) => {
+      if (cluster.length > 0) centroids[c] = cluster.reduce((a, b) => a + b, 0) / cluster.length;
+    });
+  }
+
+  const result = centroids.map((cen, idx) => ({
+    centroid: clusters[idx].length ? Math.round(cen) : 0,
+    count: clusters[idx].length
+  })).sort((a, b) => a.centroid - b.centroid).map((item, idx) => ({
+    group: `Tier ${idx + 1}`,
+    centroid: item.centroid,
+    count: item.count
+  }));
+
+  res.json({ success: true, clusters: result });
+});
+
+// AI Salary Prediction & Recommendation API
+app.post('/api/employees/ai-salary-prediction', async (req, res) => {
+  try {
+    const { currentSalary, position } = req.body;
+    const salary = Number(currentSalary);
+
+    if (isNaN(salary) || salary <= 0) {
+      return res.status(400).json({ error: 'Valid current salary is required.' });
+    }
+
+    // ดึงเงินเดือนทั้งหมดในระบบมาใช้อ้างอิงค่าเฉลี่ยตลาดภายในองค์กร
+    const [rows] = await pool.query('SELECT sonbor_salary, sonbor_position FROM Sonbor_Employees');
+    const allSalaries = rows.map(r => Number(r.sonbor_salary));
+    const marketAvg = allSalaries.length > 0 ? allSalaries.reduce((a, b) => a + b, 0) / allSalaries.length : salary;
+
+    // คำนวณความสมเหตุสมผล (Salary Health Check)
+    let healthStatus = 'Fair & Competitive';
+    let suggestedIncreasePercent = 7.5; // ค่าเริ่มต้นมาตรฐาน (Midpoint Merit)
+    let aiReasoning = '';
+
+    if (salary < marketAvg * 0.7) {
+      healthStatus = 'Underpaid (Risk of Turnover)';
+      suggestedIncreasePercent = 12.0; // ควรปรับขึ้นสูงหน่อย เพื่อให้พนักงานพอใจและพ้นเกณฑ์เสี่ยงลาออก
+      aiReasoning = 'AI Analysis: Employee salary is significantly below the internal market average. A higher merit increase of 12% is strongly recommended to boost retention and fairness.';
+    } else if (salary > marketAvg * 1.4) {
+      healthStatus = 'Overpaid / Senior Level';
+      suggestedIncreasePercent = 4.0; // ปรับขึ้นในอัตราที่น้อยลง เพราะฐานเงินเดือนสูงอยู่แล้ว
+      aiReasoning = 'AI Analysis: Salary is in the upper tier. A modest merit increase of 4% is recommended to maintain cost efficiency while rewarding performance.';
+    } else {
+      healthStatus = 'Balanced & Reasonable';
+      suggestedIncreasePercent = 8.0; // อัตราปกติที่สมเหตุสมผล
+      aiReasoning = 'AI Analysis: Salary aligns well with internal benchmarks. An 8% increase provides optimal satisfaction and matches performance expectations.';
+    }
+
+    const recommendedNewSalary = Math.round(salary * (1 + suggestedIncreasePercent / 100));
+    const monthlyDifference = recommendedNewSalary - salary;
+
+    return res.status(200).json({
+      success: true,
+      prediction: {
+        currentSalary: salary,
+        marketAverage: Math.round(marketAvg),
+        healthStatus,
+        suggestedIncreasePercent,
+        recommendedNewSalary,
+        monthlyDifference,
+        aiReasoning
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'AI prediction failed' });
+  }
+});
+
+app.get('/api/employees/positions', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT DISTINCT sonbor_position FROM Sonbor_Employees');
+    const positions = rows.map(r => r.sonbor_position);
+    res.json({ success: true, positions });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch positions' });
+  }
+});
+
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
