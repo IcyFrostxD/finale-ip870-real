@@ -12,4 +12,4 @@ Password : D5w3Qh!Y
 
 To access a code go to
 
-src => app
+src => app and there you go ///// Putty code was also there
