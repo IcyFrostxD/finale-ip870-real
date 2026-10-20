@@ -7,3 +7,9 @@ How to access putty with my account
 Username : std6730251263
 
 Password : D5w3Qh!Y
+
+=============================================
+
+To access a code go to
+
+src => app
